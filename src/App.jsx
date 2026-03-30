@@ -404,9 +404,13 @@ export default function App() {
 
   // ═══════════ APPLY ═══════════
   if (screen === S.APPLY) {
-    const fee = (parseFloat(loanAmount || 0) * 0.1).toFixed(2);
-    const total = (parseFloat(loanAmount || 0) * 1.1).toFixed(2);
-    const usd = (parseFloat(loanAmount || 0) / 17.5).toFixed(2);
+    const kycLimitUsd = user?.kycLevel === "COMPLETE" ? 50 : user?.kycLevel === "VERIFIED" ? 30 : 10;
+    const kycLimitMxn = kycLimitUsd * 17.5;
+    const amount = Math.min(parseFloat(loanAmount || 0), kycLimitMxn);
+    const fee = (amount * 0.1).toFixed(2);
+    const total = (amount * 1.1).toFixed(2);
+    const usd = (amount / 17.5).toFixed(2);
+    const overLimit = parseFloat(loanAmount || 0) > kycLimitMxn;
     return (
       <div style={shell}>
         <style>{globalStyles}</style>
@@ -419,9 +423,13 @@ export default function App() {
             <p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 36 }}>Recibí el dinero al instante en tu wallet</p>
           </div>
 
-          <p style={label}>Monto en pesos mexicanos</p>
-          <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 28 }}
-            type="number" value={loanAmount} onChange={e => setLoanAmount(e.target.value)} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <p style={label}>Monto en pesos mexicanos</p>
+            <p style={{ ...label, color: overLimit ? t.danger : t.muted }}>Límite: ${kycLimitMxn} MXN (KYC {user?.kycLevel})</p>
+          </div>
+          <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 28, borderColor: overLimit ? t.danger : undefined }}
+            type="number" min="1" max={kycLimitMxn} value={loanAmount}
+            onChange={e => setLoanAmount(String(Math.min(parseFloat(e.target.value) || 0, kycLimitMxn)))} />
 
           <div style={{ ...card, marginBottom: 36 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
