@@ -29,6 +29,7 @@ const api = async (path, options = {}) => {
 const S = {
   WELCOME: 0, PHONE: 1, OTP: 2, PROFILE: 3, HOME: 4,
   APPLY: 5, REPAY: 6, HISTORY: 7, PAY: 8, SEND: 9, YIELD: 10, DEPOSIT: 11,
+  ROLE: 12, MERCH_ONBOARD: 13, MERCH_DASH: 14,
 };
 
 const fmt = (n) => Number(n ?? 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -125,8 +126,18 @@ export default function App() {
   const [sendAmount, setSendAmount] = useState("100");
   const [devCode, setDevCode] = useState("");
   const [reveal, setReveal] = useState(false);
+  const [revealData, setRevealData] = useState(null); // override on-chain reveal (e.g. merchant wallet)
   const [copied, setCopied] = useState(false);
   const [celebration, setCelebration] = useState(null);
+  // Merchant role
+  const [role, setRole] = useState("persona");
+  const [myMerchant, setMyMerchant] = useState(null);
+  const [merchantActivity, setMerchantActivity] = useState(null);
+  const [merchantName, setMerchantName] = useState("");
+  const [merchantCategory, setMerchantCategory] = useState("Abarrotes");
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [merchantCodeInput, setMerchantCodeInput] = useState("");
 
   const clear = () => { setError(""); setSuccess(""); };
 
@@ -152,6 +163,10 @@ export default function App() {
     }
   }, []);
 
+  const loadMerchantActivity = useCallback(async () => {
+    try { setMerchantActivity(await api("/api/merchants/mine/activity")); } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     if (localStorage.getItem("atlantis_token")) { setScreen(S.HOME); loadDash(); }
   }, [loadDash]);
@@ -163,9 +178,68 @@ export default function App() {
     }
   }, [error, success]);
 
-  const celebrate = (title, amountMxn, subtitle, positive = true) => {
+  // Render the merchant's QR image
+  useEffect(() => {
+    if (screen === S.MERCH_DASH && myMerchant?.qrCode) {
+      import("qrcode").then((QR) =>
+        QR.toDataURL(myMerchant.qrCode, { width: 260, margin: 1, color: { dark: "#0B1628", light: "#F0EDE5" } })
+          .then(setQrDataUrl).catch(() => {})
+      );
+    }
+  }, [screen, myMerchant]);
+
+  // Poll the merchant dashboard (live incoming payments)
+  useEffect(() => {
+    if (screen !== S.MERCH_DASH) return;
+    loadMerchantActivity();
+    const id = setInterval(loadMerchantActivity, 3000);
+    return () => clearInterval(id);
+  }, [screen, loadMerchantActivity]);
+
+  // Camera QR scanner on the Pay screen
+  useEffect(() => {
+    if (screen !== S.PAY || !scanning) return;
+    let scanner; let stopped = false;
+    const stop = () => { if (scanner) { scanner.stop().then(() => scanner.clear()).catch(() => {}); } };
+    import("html5-qrcode").then(({ Html5Qrcode }) => {
+      if (stopped) return;
+      scanner = new Html5Qrcode("qr-reader");
+      scanner.start(
+        { facingMode: "environment" }, { fps: 10, qrbox: 220 },
+        (text) => { if (!stopped) { stopped = true; stop(); onScan(text); } },
+        () => {},
+      ).catch(() => setError("No se pudo abrir la cámara. Ingresá el código a mano."));
+    });
+    return () => { stopped = true; stop(); };
+  }, [screen, scanning]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const celebrate = (title, amountMxn, subtitle, positive = true, returnTo = S.HOME) => {
     setCelebration({ title, amountMxn, subtitle, positive });
-    setTimeout(() => { setCelebration(null); setScreen(S.HOME); }, 2200);
+    setTimeout(() => { setCelebration(null); setScreen(returnTo); }, 2200);
+  };
+
+  // ─── Role routing + merchant ───
+  const routeAfterAuth = async () => {
+    if (role === "comercio") {
+      const m = await api("/api/merchants/mine").catch(() => null);
+      if (m && m.qrCode) { setMyMerchant(m); setScreen(S.MERCH_DASH); }
+      else setScreen(S.MERCH_ONBOARD);
+    } else {
+      setScreen(S.HOME); loadDash();
+    }
+  };
+  const createMerchant = async () => {
+    clear(); setLoading(true);
+    try {
+      const m = await api("/api/merchants", { method: "POST", body: JSON.stringify({ name: merchantName, category: merchantCategory }) });
+      setMyMerchant(m); setScreen(S.MERCH_DASH);
+    } catch (e) { setError(e.message); } setLoading(false);
+  };
+  const onScan = async (text) => {
+    const code = (String(text).match(/ATL-[A-Z0-9]+/) || [String(text)])[0];
+    setScanning(false);
+    try { setMerchant(await api(`/api/merchants/${code}`)); }
+    catch { setError("QR no reconocido"); }
   };
 
   // ─── Actions ───
@@ -182,12 +256,12 @@ export default function App() {
     try {
       const res = await api("/api/auth/otp/verify", { method: "POST", body: JSON.stringify({ phone, code: otp }) });
       localStorage.setItem("atlantis_token", res.accessToken); setUser(res.user);
-      if (res.user.isNewUser || !res.user.name) { setScreen(S.PROFILE); } else { setScreen(S.HOME); loadDash(); }
+      if (res.user.isNewUser || !res.user.name) { setScreen(S.PROFILE); } else { await routeAfterAuth(); }
     } catch (e) { setError(e.message); } setLoading(false);
   };
   const updateProfile = async () => {
     clear(); setLoading(true);
-    try { const res = await api("/api/auth/profile", { method: "PUT", body: JSON.stringify({ name, acceptTerms: true }) }); setUser(res); setScreen(S.HOME); loadDash(); }
+    try { const res = await api("/api/auth/profile", { method: "PUT", body: JSON.stringify({ name, acceptTerms: true }) }); setUser(res); await routeAfterAuth(); }
     catch (e) { setError(e.message); } setLoading(false);
   };
   const applyCredit = async () => {
@@ -205,21 +279,7 @@ export default function App() {
     try { const r = await api("/api/wallet/deposit", { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(depositAmount) }) }); await loadDash(); celebrate("Depósito acreditado", r.depositedMxn, "Efectivo convertido a saldo digital"); }
     catch (e) { setError(e.message); } setLoading(false);
   };
-  const ensureDemoMerchant = async () => {
-    const stored = localStorage.getItem("atlantis_demo_merchant");
-    if (stored) {
-      try { const m = JSON.parse(stored); await api(`/api/merchants/${m.qrCode}`); return m; } catch { /* recreate */ }
-    }
-    const m = await api("/api/merchants", { method: "POST", body: JSON.stringify({ name: "Tienda Doña Lupita", category: "Abarrotes" }) });
-    const rec = { name: m.name, category: m.category, qrCode: m.qrCode, commissionBps: m.commissionBps };
-    localStorage.setItem("atlantis_demo_merchant", JSON.stringify(rec));
-    return rec;
-  };
-  const openPay = async () => {
-    clear(); setLoading(true);
-    try { setMerchant(await ensureDemoMerchant()); setScreen(S.PAY); }
-    catch (e) { setError(e.message); } setLoading(false);
-  };
+  const openPay = () => { clear(); setMerchant(null); setScanning(true); setScreen(S.PAY); };
   const pay = async () => {
     clear(); setLoading(true);
     try { const r = await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount) }) }); await loadDash(); celebrate(`Pagaste en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false); }
@@ -240,11 +300,22 @@ export default function App() {
     catch (e) { setError(e.message); } setLoading(false);
   };
   const copyAddr = () => {
-    if (onchain?.publicKey) { navigator.clipboard?.writeText(onchain.publicKey); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    const pk = revealData?.publicKey ?? onchain?.publicKey;
+    if (pk) { navigator.clipboard?.writeText(pk); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+  };
+  const openMerchantReveal = () => {
+    if (!myMerchant?.solanaPublicKey) return;
+    setRevealData({
+      publicKey: myMerchant.solanaPublicKey,
+      balanceUsdc: merchantActivity?.balanceUsdc ?? myMerchant.balanceUsdc ?? 0,
+      explorerUrl: `https://explorer.solana.com/address/${myMerchant.solanaPublicKey}?cluster=devnet`,
+    });
+    setReveal(true);
   };
   const logout = () => {
     localStorage.removeItem("atlantis_token");
     setUser(null); setBalance(null); setOnchain(null); setYieldInfo(null); setCurrentLoan(null);
+    setMyMerchant(null); setMerchantActivity(null); setScanning(false); setRole("persona");
     setScreen(S.WELCOME);
   };
 
@@ -265,8 +336,27 @@ export default function App() {
         <div style={{ width: 48, height: 1, background: t.gold, marginBottom: 20 }} />
         <p style={{ color: t.creamDim, fontSize: 18, marginBottom: 6, fontStyle: "italic" }}>La civilización financiera</p>
         <p style={{ ...sans, color: t.muted, fontSize: 13, marginBottom: 56, letterSpacing: "0.04em" }}>Crédito · Pagos · Envíos · Rendimiento</p>
-        <button style={btn} onClick={() => setScreen(S.PHONE)}>Comenzar</button>
+        <button style={btn} onClick={() => setScreen(S.ROLE)}>Comenzar</button>
         <p style={{ ...sans, color: t.muted, fontSize: 11, marginTop: 40, letterSpacing: "0.06em" }}>ATLANTIS 4.3 · DEMO</p>
+      </div>
+    );
+  } else if (screen === S.ROLE) {
+    topo = 0.05;
+    const roleTile = (icon, title, sub, r) => (
+      <button onClick={() => { setRole(r); setScreen(S.PHONE); }} style={{ ...card, width: "100%", textAlign: "left", cursor: "pointer", marginBottom: 16, display: "flex", gap: 16, alignItems: "center", border: `1px solid ${t.borderGold}` }}>
+        <Icon name={icon} size={28} />
+        <div><p style={{ fontSize: 18, fontWeight: 600 }}>{title}</p><p style={{ ...sans, color: t.muted, fontSize: 13, marginTop: 2 }}>{sub}</p></div>
+      </button>
+    );
+    content = (
+      <div style={page}>
+        <div style={{ paddingTop: 80, marginBottom: 40 }}>
+          <h2 style={{ fontSize: 30, fontWeight: 400, marginBottom: 10 }}>¿Cómo vas a usar Atlantis?</h2>
+          <p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic" }}>Elegí tu rol para esta sesión</p>
+        </div>
+        {roleTile("send", "Soy persona", "Crédito, pagos, envíos, rendimiento", "persona")}
+        {roleTile("pay", "Soy un comercio", "Cobrá con QR y mirá las ventas en vivo", "comercio")}
+        <button style={{ ...btnOutline, marginTop: 28 }} onClick={() => setScreen(S.WELCOME)}>Volver</button>
       </div>
     );
   } else if (screen === S.PHONE) {
@@ -438,16 +528,84 @@ export default function App() {
     topo = 0.03;
     content = (
       <div style={page}>
-        <div style={{ paddingTop: 44 }}>{back()}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Pagar en comercio</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 32 }}>Escaneá el QR del local</p></div>
-        <div style={{ ...card, textAlign: "center", marginBottom: 20 }}>
-          <div style={{ width: 132, height: 132, margin: "0 auto 16px", borderRadius: 12, background: t.cream, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon name="pay" size={88} color={t.navy} /></div>
-          <p style={{ fontSize: 20, fontWeight: 600 }}>{merchant?.name}</p>
-          <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 4 }}>{merchant?.category} · {merchant?.qrCode}</p>
+        <div style={{ paddingTop: 44 }}>{back()}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Pagar en comercio</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>{merchant ? "Confirmá el pago" : "Escaneá el QR del local"}</p></div>
+        {!merchant ? (
+          <>
+            {scanning
+              ? <div id="qr-reader" style={{ width: "100%", borderRadius: 16, overflow: "hidden", border: `1px solid ${t.border}`, minHeight: 240 }} />
+              : <button style={btn} onClick={() => setScanning(true)}>Abrir cámara</button>}
+            <div style={{ marginTop: 24 }}>
+              <p style={label}>o ingresá el código del comercio</p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <input style={{ ...inp, flex: 1, fontFamily: "monospace" }} value={merchantCodeInput} onChange={e => setMerchantCodeInput(e.target.value.toUpperCase())} placeholder="ATL-XXXXXXXX" />
+                <button style={{ padding: "0 20px", border: "none", borderRadius: 8, background: t.gold, color: t.navy, fontWeight: 700, cursor: "pointer", ...sans, fontSize: 13 }} onClick={() => onScan(merchantCodeInput)} disabled={!merchantCodeInput}>Buscar</button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ ...card, marginBottom: 20 }}>
+              <p style={{ fontSize: 20, fontWeight: 600 }}>{merchant.name}</p>
+              <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 4 }}>{merchant.category} · {merchant.qrCode}</p>
+            </div>
+            <p style={label}>Monto a pagar</p>
+            <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 10 }} type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+            <p style={{ ...sans, color: t.muted, fontSize: 12, marginBottom: 24 }}>Comisión al comercio: {(merchant.commissionBps ?? 50) / 100}% (vs 3-4% de las tarjetas)</p>
+            <button style={{ ...btn, opacity: loading || !payAmount ? 0.6 : 1 }} onClick={pay} disabled={loading || !payAmount}>{loading ? "Procesando..." : `Pagar $${payAmount} MXN`}</button>
+            <button style={{ ...btnOutline, marginTop: 12 }} onClick={() => { setMerchant(null); setScanning(true); }}>Escanear otro</button>
+          </>
+        )}
+      </div>
+    );
+  } else if (screen === S.MERCH_ONBOARD) {
+    content = (
+      <div style={page}>
+        <div style={{ paddingTop: 60, marginBottom: 36 }}>
+          <h2 style={{ fontSize: 30, fontWeight: 400, marginBottom: 10 }}>Dá de alta tu comercio</h2>
+          <p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic" }}>Empezá a cobrar en segundos</p>
         </div>
-        <p style={label}>Monto a pagar</p>
-        <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 10 }} type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
-        <p style={{ ...sans, color: t.muted, fontSize: 12, marginBottom: 32 }}>Comisión al comercio: {(merchant?.commissionBps ?? 50) / 100}% (vs 3-4% de las tarjetas)</p>
-        <button style={{ ...btn, opacity: loading || !payAmount ? 0.6 : 1 }} onClick={pay} disabled={loading || !payAmount}>{loading ? "Procesando..." : `Pagar $${payAmount} MXN`}</button>
+        <p style={label}>Nombre del comercio</p>
+        <input style={{ ...inp, marginBottom: 20 }} value={merchantName} onChange={e => setMerchantName(e.target.value)} placeholder="Ej. Kiosco de Juan" />
+        <p style={label}>Rubro</p>
+        <input style={{ ...inp, marginBottom: 28 }} value={merchantCategory} onChange={e => setMerchantCategory(e.target.value)} placeholder="Ej. Abarrotes" />
+        <button style={{ ...btn, opacity: loading || merchantName.length < 2 ? 0.6 : 1 }} onClick={createMerchant} disabled={loading || merchantName.length < 2}>{loading ? "Creando..." : "Crear comercio"}</button>
+        <button style={{ ...btnOutline, marginTop: 12 }} onClick={logout}>Salir</button>
+      </div>
+    );
+  } else if (screen === S.MERCH_DASH) {
+    topo = 0.03;
+    const pays = merchantActivity?.payments ?? [];
+    content = (
+      <div style={page}>
+        <div style={{ paddingTop: 28, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <LogoMark size={30} />
+            <div><p style={{ ...sans, color: t.muted, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase" }}>Comercio</p><p style={{ fontSize: 18, fontWeight: 600 }}>{myMerchant?.name}</p></div>
+          </div>
+          <button onClick={logout} style={{ ...sans, background: "transparent", border: `1px solid ${t.border}`, color: t.muted, padding: "7px 14px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>SALIR</button>
+        </div>
+        <div onClick={openMerchantReveal} style={{ ...card, marginBottom: 16, border: `1px solid ${t.borderGold}`, cursor: "pointer" }}>
+          <p style={{ ...label, marginBottom: 6 }}>Cobrado</p>
+          <p style={{ fontSize: 42, fontWeight: 300, color: t.gold, lineHeight: 1 }}>${fmt(merchantActivity?.balanceMxn ?? myMerchant?.balanceMxn ?? 0)}</p>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10 }}>
+            <p style={{ ...sans, color: t.muted, fontSize: 13 }}>MXN</p>
+            <p style={{ ...sans, color: t.muted, fontSize: 11, display: "flex", alignItems: "center", gap: 5 }}><Icon name="chain" size={13} color={t.muted} /> verificar en blockchain</p>
+          </div>
+        </div>
+        <div style={{ ...card, textAlign: "center", marginBottom: 20 }}>
+          <p style={label}>Mostrá este QR para cobrar</p>
+          {qrDataUrl ? <img src={qrDataUrl} alt="QR del comercio" style={{ width: 220, height: 220, borderRadius: 12, margin: "8px auto" }} /> : <div style={{ height: 236 }} />}
+          <p style={{ ...sans, color: t.gold, fontSize: 14, letterSpacing: "0.1em" }}>{myMerchant?.qrCode}</p>
+        </div>
+        <p style={{ ...label, marginBottom: 12 }}>Pagos recibidos {pays.length > 0 && <span style={{ color: t.success }}>· en vivo</span>}</p>
+        {pays.length === 0 ? (
+          <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Esperando el primer pago…</p>
+        ) : pays.map((p, i) => (
+          <div key={p.id || i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${t.border}`, animation: i === 0 ? "floatUp 0.5s ease" : "none" }}>
+            <div><p style={{ fontSize: 15, fontWeight: 500 }}>{p.payerName}</p><p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 3 }}>{new Date(p.createdAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })} · comisión ${fmt(p.commissionMxn)}</p></div>
+            <p style={{ fontWeight: 600, fontSize: 16, color: t.success }}>+${fmt(p.netMxn)}</p>
+          </div>
+        ))}
       </div>
     );
   } else if (screen === S.SEND) {
@@ -518,6 +676,7 @@ export default function App() {
   }
 
   // ─── Single return: stable shell + overlays keep inputs mounted ───
+  const rv = revealData ?? onchain;
   return (
     <div style={shell}>
       <style>{globalStyles}</style>
@@ -540,17 +699,17 @@ export default function App() {
       )}
 
       {reveal && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 250, background: "rgba(5,10,20,0.7)", display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => setReveal(false)}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 250, background: "rgba(5,10,20,0.7)", display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => { setReveal(false); setRevealData(null); }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 430, background: `linear-gradient(180deg, ${t.navyMid}, ${t.navy})`, borderTop: `1px solid ${t.borderGold}`, borderRadius: "20px 20px 0 0", padding: "28px 28px 40px", animation: "sheetUp 0.35s ease" }}>
             <div style={{ width: 40, height: 4, background: t.border, borderRadius: 2, margin: "0 auto 22px" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}><Icon name="chain" size={20} /><p style={{ fontSize: 20, fontWeight: 600 }}>Bajo el capó</p></div>
             <p style={{ color: t.creamDim, fontSize: 15, fontStyle: "italic", marginBottom: 24 }}>Vos ves pesos. Por debajo, cada peso es USDC liquidado en la blockchain de Solana.</p>
-            {onchain?.publicKey ? (
+            {rv?.publicKey ? (
               <>
-                <p style={label}>Tu wallet en Solana (devnet)</p>
-                <button onClick={copyAddr} style={{ width: "100%", textAlign: "left", background: t.navyLight, border: `1px solid ${t.border}`, borderRadius: 8, padding: "12px 14px", color: t.gold, fontFamily: "monospace", fontSize: 13, cursor: "pointer", marginBottom: 18, wordBreak: "break-all" }}>{onchain.publicKey} <span style={{ ...sans, color: t.muted, fontSize: 11 }}>{copied ? "· copiado ✓" : "· copiar"}</span></button>
-                <div style={{ ...card, marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ color: t.creamDim, fontSize: 15 }}>Saldo en la cadena</span><span style={{ fontWeight: 600 }}>{Number(onchain.balanceUsdc).toFixed(6)} <span style={{ color: t.gold }}>aUSDC</span></span></div>
-                <a href={onchain.explorerUrl} target="_blank" rel="noreferrer" style={{ ...btnOutline, display: "block", textAlign: "center", textDecoration: "none" }}>Ver en Solana Explorer ↗</a>
+                <p style={label}>Wallet en Solana (devnet)</p>
+                <button onClick={copyAddr} style={{ width: "100%", textAlign: "left", background: t.navyLight, border: `1px solid ${t.border}`, borderRadius: 8, padding: "12px 14px", color: t.gold, fontFamily: "monospace", fontSize: 13, cursor: "pointer", marginBottom: 18, wordBreak: "break-all" }}>{rv.publicKey} <span style={{ ...sans, color: t.muted, fontSize: 11 }}>{copied ? "· copiado ✓" : "· copiar"}</span></button>
+                <div style={{ ...card, marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ color: t.creamDim, fontSize: 15 }}>Saldo en la cadena</span><span style={{ fontWeight: 600 }}>{Number(rv.balanceUsdc).toFixed(6)} <span style={{ color: t.gold }}>aUSDC</span></span></div>
+                <a href={rv.explorerUrl} target="_blank" rel="noreferrer" style={{ ...btnOutline, display: "block", textAlign: "center", textDecoration: "none" }}>Ver en Solana Explorer ↗</a>
               </>
             ) : (
               <p style={{ color: t.muted, fontSize: 15 }}>Esta cuenta todavía no tiene wallet on-chain.</p>

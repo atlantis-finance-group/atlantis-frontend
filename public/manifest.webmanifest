@@ -1,0 +1,12 @@
+{
+  "name": "Atlantis",
+  "short_name": "Atlantis",
+  "description": "La civilización financiera — crédito, pagos, envíos y rendimiento.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B1628",
+  "theme_color": "#0B1628",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
