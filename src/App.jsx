@@ -60,6 +60,10 @@ const globalStyles = `
   input:focus { border-color: ${t.gold} !important; }
   button:active { transform: scale(0.98); }
   body { background: ${t.navy}; }
+  /* Contener el lector de QR: que el <video> nunca se tome la pantalla en negro */
+  #qr-reader { width: 100% !important; border: 0 !important; line-height: 0; background: ${t.navyLight}; border-radius: 16px; overflow: hidden; }
+  #qr-reader video { position: static !important; width: 100% !important; height: auto !important; display: block; border-radius: 16px; }
+  #qr-reader img[alt="Info icon"], #qr-reader__dashboard_section_csr span { display: none !important; }
 `;
 
 // ─── Module-level presentational components ───
@@ -218,7 +222,12 @@ export default function App() {
       const qrbox = (vw, vh) => { const s = Math.floor(Math.min(vw, vh) * 0.75); return { width: s, height: s }; };
       scanner.start(
         { facingMode: "environment" }, { fps: 12, qrbox },
-        (text) => { if (!stopped) { stopped = true; stop(); onScan(text); } },
+        async (text) => {
+          if (stopped) return;
+          stopped = true;
+          try { await scanner.stop(); await scanner.clear(); } catch { /* ya detenido */ }
+          onScan(text);
+        },
         () => {},
       ).catch((e) => {
         setScanning(false);
