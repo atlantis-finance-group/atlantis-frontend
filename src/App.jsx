@@ -211,10 +211,18 @@ export default function App() {
       setError("La cámara necesita HTTPS. Abrí el link https… o ingresá el código a mano.");
       return;
     }
-    let scanner; let stopped = false;
-    const stop = () => { if (scanner) { scanner.stop().then(() => scanner.clear()).catch(() => {}); } };
+    let scanner; let active = false; let done = false;
+    // Teardown idempotente: solo frena si está corriendo, y atrapa el throw
+    // SINCRÓNICO de html5-qrcode ("Cannot stop, scanner is not running") que
+    // antes tumbaba React al frenar dos veces (callback de lectura + cleanup).
+    const teardown = async () => {
+      if (!scanner || !active) return;
+      active = false;
+      try { await scanner.stop(); } catch { /* ya detenido */ }
+      try { await scanner.clear(); } catch { /* nada que limpiar */ }
+    };
     import("html5-qrcode").then(({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
-      if (stopped) return;
+      if (done) return;
       scanner = new Html5Qrcode("qr-reader", {
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
         experimentalFeatures: { useBarCodeDetectorIfSupported: true }, // detector nativo del SO
@@ -223,13 +231,13 @@ export default function App() {
       scanner.start(
         { facingMode: "environment" }, { fps: 12, qrbox },
         async (text) => {
-          if (stopped) return;
-          stopped = true;
-          try { await scanner.stop(); await scanner.clear(); } catch { /* ya detenido */ }
+          if (done) return;
+          done = true;
+          await teardown();
           onScan(text);
         },
         () => {},
-      ).catch((e) => {
+      ).then(() => { active = true; }).catch((e) => {
         setScanning(false);
         const why = e?.name === "NotAllowedError" ? "permiso denegado"
           : e?.name === "NotFoundError" ? "no se encontró cámara"
@@ -237,7 +245,7 @@ export default function App() {
         setError(`No se pudo abrir la cámara (${why}). Ingresá el código a mano.`);
       });
     }).catch(() => { setScanning(false); setError("No se pudo cargar el lector de QR. Ingresá el código a mano."); });
-    return () => { stopped = true; stop(); };
+    return () => { done = true; teardown(); };
   }, [screen, scanning]);
 
   const celebrate = (title, amountMxn, subtitle, positive = true, returnTo = S.HOME) => {
