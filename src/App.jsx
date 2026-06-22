@@ -238,7 +238,7 @@ export default function App() {
       });
     }).catch(() => { setScanning(false); setError("No se pudo cargar el lector de QR. Ingresá el código a mano."); });
     return () => { stopped = true; stop(); };
-  }, [screen, scanning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [screen, scanning]);
 
   const celebrate = (title, amountMxn, subtitle, positive = true, returnTo = S.HOME) => {
     setCelebration({ title, amountMxn, subtitle, positive });
