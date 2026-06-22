@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
@@ -65,6 +65,32 @@ const globalStyles = `
   #qr-reader video { position: static !important; width: 100% !important; height: auto !important; display: block; border-radius: 16px; }
   #qr-reader img[alt="Info icon"], #qr-reader__dashboard_section_csr span { display: none !important; }
 `;
+
+// ─── Feedback "llegó plata": vibración (Android) + sonido (iOS/todos) ───
+let audioCtx = null;
+const getAudioCtx = () => {
+  if (audioCtx) return audioCtx;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { audioCtx = null; }
+  return audioCtx;
+};
+// iOS exige un gesto del usuario para habilitar audio: lo reanudamos al primer toque.
+const unlockAudio = () => { const c = getAudioCtx(); if (c && c.state === "suspended") c.resume().catch(() => {}); };
+const chime = () => {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  const now = ctx.currentTime;
+  [[880, 0], [1318.5, 0.11]].forEach(([freq, dt]) => { // dos notas, tipo "cha-ching"
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = "sine"; osc.frequency.value = freq;
+    osc.connect(gain); gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.0001, now + dt);
+    gain.gain.exponentialRampToValueAtTime(0.3, now + dt + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.22);
+    osc.start(now + dt); osc.stop(now + dt + 0.24);
+  });
+};
+const vibrate = () => { try { navigator.vibrate?.([0, 60, 40, 110]); } catch { /* no soportado */ } };
 
 // ─── Module-level presentational components ───
 const TopoPattern = ({ opacity = 0.05, color = t.gold }) => (
@@ -142,6 +168,11 @@ export default function App() {
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [merchantCodeInput, setMerchantCodeInput] = useState("");
+  const lastBalanceRef = useRef(null);   // para detectar plata entrante (persona)
+  const lastPayCountRef = useRef(null);  // para detectar cobros nuevos (comercio)
+
+  // "Llegó plata": vibra (Android) + suena (todos) + cartel opcional.
+  const notify = useCallback((title) => { vibrate(); chime(); if (title) setSuccess(title); }, []);
 
   const clear = () => { setError(""); setSuccess(""); };
 
@@ -154,6 +185,7 @@ export default function App() {
         api("/api/wallet/yield").catch(() => null),
       ]);
       setBalance(bal);
+      lastBalanceRef.current = bal?.balanceMxn ?? lastBalanceRef.current;
       setCurrentLoan(loan.loan !== undefined ? loan.loan : loan);
       setTransactions(Array.isArray(txs) ? txs : txs.transactions ?? []);
       setLoanHistory(Array.isArray(hist) ? hist : hist.loans ?? []);
@@ -168,8 +200,17 @@ export default function App() {
   }, []);
 
   const loadMerchantActivity = useCallback(async () => {
-    try { setMerchantActivity(await api("/api/merchants/mine/activity")); } catch { /* ignore */ }
-  }, []);
+    try {
+      const a = await api("/api/merchants/mine/activity");
+      const n = a.payments?.length ?? 0;
+      if (lastPayCountRef.current !== null && n > lastPayCountRef.current) {
+        const p = a.payments[0];
+        notify(`Cobraste $${fmt(p?.netMxn)} de ${p?.payerName}`); // vibra + suena
+      }
+      lastPayCountRef.current = n;
+      setMerchantActivity(a);
+    } catch { /* ignore */ }
+  }, [notify]);
 
   useEffect(() => {
     if (localStorage.getItem("atlantis_token")) { setScreen(S.HOME); loadDash(); }
@@ -181,6 +222,28 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [error, success]);
+
+  // iOS: habilitar audio en el primer toque del usuario.
+  useEffect(() => {
+    window.addEventListener("pointerdown", unlockAudio, { once: true });
+    return () => window.removeEventListener("pointerdown", unlockAudio);
+  }, []);
+
+  // Persona en Home: detectar plata entrante (P2P recibido) mientras la app está abierta.
+  useEffect(() => {
+    if (screen !== S.HOME) return;
+    const id = setInterval(async () => {
+      try {
+        const b = await api("/api/wallet/balance");
+        if (lastBalanceRef.current !== null && b.balanceMxn > lastBalanceRef.current + 0.001) {
+          notify(`Recibiste $${fmt(b.balanceMxn - lastBalanceRef.current)} MXN`); // vibra + suena
+          loadDash();
+        }
+        lastBalanceRef.current = b.balanceMxn;
+      } catch { /* ignore */ }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [screen, notify, loadDash]);
 
   // Render the merchant's QR image
   useEffect(() => {
@@ -249,6 +312,7 @@ export default function App() {
   }, [screen, scanning]);
 
   const celebrate = (title, amountMxn, subtitle, positive = true, returnTo = S.HOME) => {
+    vibrate(); chime();
     setCelebration({ title, amountMxn, subtitle, positive });
     setTimeout(() => { setCelebration(null); setScreen(returnTo); }, 2200);
   };
