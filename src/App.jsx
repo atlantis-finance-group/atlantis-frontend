@@ -182,8 +182,10 @@ export default function App() {
   useEffect(() => {
     if (screen === S.MERCH_DASH && myMerchant?.qrCode) {
       import("qrcode").then((QR) =>
-        QR.toDataURL(myMerchant.qrCode, { width: 260, margin: 1, color: { dark: "#0B1628", light: "#F0EDE5" } })
-          .then(setQrDataUrl).catch(() => {})
+        QR.toDataURL(myMerchant.qrCode, {
+          width: 320, margin: 3, errorCorrectionLevel: "Q",
+          color: { dark: "#000000", light: "#FFFFFF" }, // alto contraste = escaneable de pantalla
+        }).then(setQrDataUrl).catch(() => {})
       );
     }
   }, [screen, myMerchant]);
@@ -207,11 +209,15 @@ export default function App() {
     }
     let scanner; let stopped = false;
     const stop = () => { if (scanner) { scanner.stop().then(() => scanner.clear()).catch(() => {}); } };
-    import("html5-qrcode").then(({ Html5Qrcode }) => {
+    import("html5-qrcode").then(({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
       if (stopped) return;
-      scanner = new Html5Qrcode("qr-reader");
+      scanner = new Html5Qrcode("qr-reader", {
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true }, // detector nativo del SO
+      });
+      const qrbox = (vw, vh) => { const s = Math.floor(Math.min(vw, vh) * 0.75); return { width: s, height: s }; };
       scanner.start(
-        { facingMode: "environment" }, { fps: 10, qrbox: 220 },
+        { facingMode: "environment" }, { fps: 12, qrbox },
         (text) => { if (!stopped) { stopped = true; stop(); onScan(text); } },
         () => {},
       ).catch((e) => {
@@ -248,10 +254,13 @@ export default function App() {
     } catch (e) { setError(e.message); } setLoading(false);
   };
   const onScan = async (text) => {
-    const code = (String(text).match(/ATL-[A-Z0-9]+/) || [String(text)])[0];
+    const raw = String(text).trim();
     setScanning(false);
-    try { setMerchant(await api(`/api/merchants/${code}`)); }
-    catch { setError("QR no reconocido"); }
+    const m = raw.match(/ATL-[A-Z0-9]+/i);
+    if (!m) { setError(`Ese QR no es de un comercio Atlantis (leí: ${raw.slice(0, 24)})`); return; }
+    const code = m[0].toUpperCase();
+    try { setMerchant(await api(`/api/merchants/${code}`)); setSuccess("Comercio encontrado"); }
+    catch { setError(`No encontré el comercio ${code}`); }
   };
 
   // ─── Actions ───
