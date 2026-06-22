@@ -199,6 +199,12 @@ export default function App() {
   // Camera QR scanner on the Pay screen
   useEffect(() => {
     if (screen !== S.PAY || !scanning) return;
+    // La cámara requiere contexto seguro (HTTPS) y getUserMedia disponible.
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setScanning(false);
+      setError("La cámara necesita HTTPS. Abrí el link https… o ingresá el código a mano.");
+      return;
+    }
     let scanner; let stopped = false;
     const stop = () => { if (scanner) { scanner.stop().then(() => scanner.clear()).catch(() => {}); } };
     import("html5-qrcode").then(({ Html5Qrcode }) => {
@@ -208,8 +214,14 @@ export default function App() {
         { facingMode: "environment" }, { fps: 10, qrbox: 220 },
         (text) => { if (!stopped) { stopped = true; stop(); onScan(text); } },
         () => {},
-      ).catch(() => setError("No se pudo abrir la cámara. Ingresá el código a mano."));
-    });
+      ).catch((e) => {
+        setScanning(false);
+        const why = e?.name === "NotAllowedError" ? "permiso denegado"
+          : e?.name === "NotFoundError" ? "no se encontró cámara"
+          : (e?.name || e?.message || "error");
+        setError(`No se pudo abrir la cámara (${why}). Ingresá el código a mano.`);
+      });
+    }).catch(() => { setScanning(false); setError("No se pudo cargar el lector de QR. Ingresá el código a mano."); });
     return () => { stopped = true; stop(); };
   }, [screen, scanning]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -279,7 +291,10 @@ export default function App() {
     try { const r = await api("/api/wallet/deposit", { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(depositAmount) }) }); await loadDash(); celebrate("Depósito acreditado", r.depositedMxn, "Efectivo convertido a saldo digital"); }
     catch (e) { setError(e.message); } setLoading(false);
   };
-  const openPay = () => { clear(); setMerchant(null); setScanning(true); setScreen(S.PAY); };
+  const openPay = () => {
+    clear(); setMerchant(null); setScanning(false); setScreen(S.PAY);
+    import("html5-qrcode").catch(() => {}); // precargar la lib para que el "Abrir cámara" sea instantáneo
+  };
   const pay = async () => {
     clear(); setLoading(true);
     try { const r = await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount) }) }); await loadDash(); celebrate(`Pagaste en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false); }
