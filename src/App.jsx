@@ -151,6 +151,8 @@ export default function App() {
   const [phone, setPhone] = useState("+521");
   const [otp, setOtp] = useState("");
   const [name, setName] = useState("");
+  const [docType, setDocType] = useState("CEDULA_UY");
+  const [docNumber, setDocNumber] = useState("");
   const [user, setUser] = useState(null);
   const [balance, setBalance] = useState(null);
   const [onchain, setOnchain] = useState(null);
@@ -398,7 +400,7 @@ export default function App() {
   };
   const updateProfile = async () => {
     clear(); setLoading(true);
-    try { const res = await api("/api/auth/profile", { method: "PUT", body: JSON.stringify({ name, acceptTerms: true }) }); setUser(res); await routeAfterAuth(); }
+    try { const res = await api("/api/auth/profile", { method: "PUT", body: JSON.stringify({ name, acceptTerms: true, idDocType: docType, idDocNumber: docNumber.trim() }) }); setUser(res); await routeAfterAuth(); }
     catch (e) { setError(e.message); } setLoading(false);
   };
   const applyCredit = async () => {
@@ -549,8 +551,18 @@ export default function App() {
           <p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic" }}>Tu nombre real para verificar tu identidad</p>
         </div>
         <input style={inp} type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Nombre completo" />
-        <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 14, marginBottom: 40, lineHeight: 1.7 }}>Al continuar, aceptás los Términos y Condiciones y la Política de Privacidad de Atlantis.</p>
-        <button style={{ ...btn, opacity: loading || name.length < 2 ? 0.6 : 1 }} onClick={updateProfile} disabled={loading || name.length < 2}>{loading ? "Guardando..." : "Continuar"}</button>
+        <p style={{ ...label, marginTop: 22, marginBottom: 8 }}>Documento de identidad</p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <select style={{ ...inp, width: 150, flexShrink: 0 }} value={docType} onChange={e => setDocType(e.target.value)}>
+            <option value="CEDULA_UY">Cédula (UY)</option>
+            <option value="INE_MX">INE (MX)</option>
+            <option value="CURP_MX">CURP (MX)</option>
+            <option value="PASAPORTE">Pasaporte</option>
+          </select>
+          <input style={{ ...inp, flex: 1 }} type="text" value={docNumber} onChange={e => setDocNumber(e.target.value)} placeholder="Número de documento" />
+        </div>
+        <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 14, marginBottom: 40, lineHeight: 1.7 }}>Tu documento valida tu identidad. Al continuar, aceptás los Términos y Condiciones y la Política de Privacidad de Atlantis.</p>
+        <button style={{ ...btn, opacity: loading || name.length < 2 || docNumber.trim().length < 4 ? 0.6 : 1 }} onClick={updateProfile} disabled={loading || name.length < 2 || docNumber.trim().length < 4}>{loading ? "Guardando..." : "Continuar"}</button>
       </div>
     );
   } else if (screen === S.HOME) {
