@@ -46,6 +46,17 @@ const tag = (color) => ({ display: "inline-block", padding: "3px 12px", borderRa
 const divider = { height: 1, background: `linear-gradient(90deg, transparent, ${t.border}, transparent)`, margin: "16px 0" };
 const label = { color: t.muted, fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", fontFamily: "system-ui, sans-serif", marginBottom: 8 };
 const sans = { fontFamily: "system-ui, sans-serif" };
+const miniLabel = { ...sans, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: t.muted, marginBottom: 2 };
+const miniVal = { fontSize: 14, fontWeight: 600 };
+
+// Desglose Bruto / Comisión Atlantis / Neto — visibilidad total en 3 columnas.
+const Breakdown = ({ gross, commission, net, netLabel = "Neto" }) => (
+  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${t.border}` }}>
+    <div><p style={miniLabel}>Bruto</p><p style={miniVal}>${fmt(gross)}</p></div>
+    <div style={{ textAlign: "center" }}><p style={miniLabel}>Comisión Atlantis</p><p style={{ ...miniVal, color: commission > 0 ? t.danger : t.muted }}>{commission > 0 ? "−" : ""}${fmt(commission)}</p></div>
+    <div style={{ textAlign: "right" }}><p style={miniLabel}>{netLabel}</p><p style={{ ...miniVal, color: t.success }}>${fmt(net)}</p></div>
+  </div>
+);
 
 const globalStyles = `
   @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600;700;800&family=Cormorant+Garamond:wght@300;400;600;700&display=swap');
@@ -169,7 +180,10 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [merchantCodeInput, setMerchantCodeInput] = useState("");
   const [chargeAmount, setChargeAmount] = useState("");   // comercio: importe a cobrar (vacío = abierto)
+  const [chargeRef, setChargeRef] = useState("");         // comercio: N° comprobante/factura
   const [payFixed, setPayFixed] = useState(false);        // pagador: el monto vino fijado en el QR
+  const [payRef, setPayRef] = useState("");               // pagador: comprobante leído del QR
+  const [expandedTx, setExpandedTx] = useState(null);     // fila de movimiento expandida (desglose)
   const lastBalanceRef = useRef(null);   // para detectar plata entrante (persona)
   const lastPayCountRef = useRef(null);  // para detectar cobros nuevos (comercio)
 
@@ -251,7 +265,9 @@ export default function App() {
   useEffect(() => {
     if (screen === S.MERCH_DASH && myMerchant?.qrCode) {
       const amt = Number(chargeAmount);
-      const payload = amt > 0 ? `${myMerchant.qrCode}|${amt}` : myMerchant.qrCode; // monto embebido
+      const ref = chargeRef.trim();
+      // payload: ATL-XXX | <monto> | <comprobante>  (campos vacíos permitidos)
+      const payload = (amt > 0 || ref) ? `${myMerchant.qrCode}|${amt > 0 ? amt : ""}${ref ? `|${ref}` : ""}` : myMerchant.qrCode;
       import("qrcode").then((QR) =>
         QR.toDataURL(payload, {
           width: 320, margin: 3, errorCorrectionLevel: "Q",
@@ -259,7 +275,7 @@ export default function App() {
         }).then(setQrDataUrl).catch(() => {})
       );
     }
-  }, [screen, myMerchant, chargeAmount]);
+  }, [screen, myMerchant, chargeAmount, chargeRef]);
 
   // Poll the merchant dashboard (live incoming payments)
   useEffect(() => {
@@ -344,11 +360,13 @@ export default function App() {
     const m = raw.match(/ATL-[A-Z0-9]+/i);
     if (!m) { setError(`Ese QR no es de un comercio Atlantis (leí: ${raw.slice(0, 24)})`); return; }
     const code = m[0].toUpperCase();
-    const amt = raw.match(/\|\s*([\d.]+)/); // monto opcional embebido por el comercio
+    const parts = raw.split("|"); // ATL-XXX | <monto> | <comprobante>
+    const amtVal = Number(parts[1]);
+    const refVal = (parts[2] || "").trim();
     try {
       setMerchant(await api(`/api/merchants/${code}`));
-      if (amt && Number(amt[1]) > 0) { setPayAmount(String(Number(amt[1]))); setPayFixed(true); }
-      else { setPayFixed(false); }
+      if (amtVal > 0) { setPayAmount(String(amtVal)); setPayFixed(true); } else setPayFixed(false);
+      setPayRef(refVal);
       setSuccess("Comercio encontrado");
     } catch { setError(`No encontré el comercio ${code}`); }
   };
@@ -391,12 +409,12 @@ export default function App() {
     catch (e) { setError(e.message); } setLoading(false);
   };
   const openPay = () => {
-    clear(); setMerchant(null); setScanning(false); setPayFixed(false); setScreen(S.PAY);
+    clear(); setMerchant(null); setScanning(false); setPayFixed(false); setPayRef(""); setScreen(S.PAY);
     import("html5-qrcode").catch(() => {}); // precargar la lib para que el "Abrir cámara" sea instantáneo
   };
   const pay = async () => {
     clear(); setLoading(true);
-    try { const r = await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount) }) }); await loadDash(); celebrate(`Pagaste en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false); }
+    try { const r = await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount), ...(payRef ? { reference: payRef } : {}) }) }); await loadDash(); celebrate(`Pagaste en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false); }
     catch (e) { setError(e.message); } setLoading(false);
   };
   const sendP2P = async () => {
@@ -581,13 +599,19 @@ export default function App() {
             <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Sin movimientos aún</p>
           ) : transactions.slice(0, 7).map((tx, i) => {
             const debit = DEBIT.has(tx.type);
+            const id = tx.id || i;
+            const open = expandedTx === id;
+            const fee = tx.type === "LOAN_REPAYMENT" ? Math.round((tx.amountMxn / 11) * 100) / 100 : 0; // 10% sobre capital
             return (
-              <div key={tx.id || i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${t.border}`, animation: i === 0 ? "floatUp 0.5s ease" : "none" }}>
-                <div style={{ paddingRight: 12 }}>
-                  <p style={{ fontSize: 15, fontWeight: 500 }}>{tx.description}</p>
-                  <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 3 }}>{new Date(tx.createdAt).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+              <div key={id} onClick={() => setExpandedTx(open ? null : id)} style={{ padding: "14px 0", borderBottom: `1px solid ${t.border}`, cursor: "pointer", animation: i === 0 ? "floatUp 0.5s ease" : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ paddingRight: 12 }}>
+                    <p style={{ fontSize: 15, fontWeight: 500 }}>{tx.description}</p>
+                    <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 3 }}>{new Date(tx.createdAt).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {open ? "ocultar" : "ver desglose"}</p>
+                  </div>
+                  <p style={{ fontWeight: 600, fontSize: 16, color: debit ? t.danger : t.success, whiteSpace: "nowrap" }}>{debit ? "−" : "+"}${fmt(tx.amountMxn)}</p>
                 </div>
-                <p style={{ fontWeight: 600, fontSize: 16, color: debit ? t.danger : t.success, whiteSpace: "nowrap" }}>{debit ? "−" : "+"}${fmt(tx.amountMxn)}</p>
+                {open && <Breakdown gross={tx.amountMxn} commission={fee} net={Math.round((tx.amountMxn - fee) * 100) / 100} netLabel={tx.type === "LOAN_REPAYMENT" ? "Capital" : "Neto"} />}
               </div>
             );
           })}
@@ -661,6 +685,7 @@ export default function App() {
             <div style={{ ...card, marginBottom: 20 }}>
               <p style={{ fontSize: 20, fontWeight: 600 }}>{merchant.name}</p>
               <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 4 }}>{merchant.category} · {merchant.qrCode}</p>
+              {payRef && <p style={{ ...sans, color: t.gold, fontSize: 13, marginTop: 6 }}>Comprobante: {payRef}</p>}
             </div>
             <p style={label}>{payFixed ? "Monto definido por el comercio" : "Monto a pagar"}</p>
             {payFixed ? (
@@ -721,6 +746,10 @@ export default function App() {
           <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 8 }}>
             {Number(chargeAmount) > 0 ? `El cliente confirma $${fmt(chargeAmount)} al escanear` : "Dejalo vacío y el cliente ingresa el monto"}
           </p>
+          <div style={{ ...divider }} />
+          <p style={label}>N° comprobante / factura</p>
+          <input style={inp} value={chargeRef} onChange={(e) => setChargeRef(e.target.value)} placeholder="Ej. FAC-0012 (opcional)" maxLength={40} />
+          <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 8 }}>Queda guardado en el cobro para tu facturación.</p>
         </div>
         <div style={{ ...card, textAlign: "center", marginBottom: 20 }}>
           <p style={label}>{Number(chargeAmount) > 0 ? `Mostrá este QR para cobrar $${fmt(chargeAmount)}` : "Mostrá este QR para cobrar"}</p>
@@ -731,9 +760,12 @@ export default function App() {
         {pays.length === 0 ? (
           <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Esperando el primer pago…</p>
         ) : pays.map((p, i) => (
-          <div key={p.id || i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${t.border}`, animation: i === 0 ? "floatUp 0.5s ease" : "none" }}>
-            <div><p style={{ fontSize: 15, fontWeight: 500 }}>{p.payerName}</p><p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 3 }}>{new Date(p.createdAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })} · comisión ${fmt(p.commissionMxn)}</p></div>
-            <p style={{ fontWeight: 600, fontSize: 16, color: t.success }}>+${fmt(p.netMxn)}</p>
+          <div key={p.id || i} style={{ padding: "14px 0", borderBottom: `1px solid ${t.border}`, animation: i === 0 ? "floatUp 0.5s ease" : "none" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <p style={{ fontSize: 15, fontWeight: 500 }}>{p.payerName}{p.reference ? <span style={{ ...sans, color: t.gold, fontSize: 12 }}> · #{p.reference}</span> : null}</p>
+              <p style={{ ...sans, color: t.muted, fontSize: 11 }}>{new Date(p.createdAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</p>
+            </div>
+            <Breakdown gross={p.amountMxn} commission={p.commissionMxn} net={p.netMxn} />
           </div>
         ))}
       </div>
