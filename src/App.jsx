@@ -29,8 +29,9 @@ const api = async (path, options = {}) => {
 const S = {
   WELCOME: 0, PHONE: 1, OTP: 2, PROFILE: 3, HOME: 4,
   APPLY: 5, REPAY: 6, HISTORY: 7, PAY: 8, SEND: 9, YIELD: 10, DEPOSIT: 11,
-  ROLE: 12, MERCH_ONBOARD: 13, MERCH_DASH: 14,
+  ROLE: 12, MERCH_ONBOARD: 13, MERCH_DASH: 14, MERCH_REPORTS: 15,
 };
+const MAIN_SCREENS = new Set([4, 13, 14, 15]); // HOME, MERCH_ONBOARD, MERCH_DASH, MERCH_REPORTS → muestran tab bar
 
 const fmt = (n) => Number(n ?? 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const DEBIT = new Set(["LOAN_REPAYMENT", "WITHDRAWAL", "FEE", "P2P_SENT", "MERCHANT_PAYMENT"]);
@@ -136,6 +137,7 @@ const Icon = ({ name, size = 22, color = t.gold }) => {
     yield: <path d="M4 16l5-5 4 4 7-8M20 7v4M20 7h-4" {...s} />,
     chain: <><path d="M10 13.5a3.5 3.5 0 010-5l1.5-1.5a3.5 3.5 0 015 5L15 13" {...s} /><path d="M14 10.5a3.5 3.5 0 010 5L12.5 17a3.5 3.5 0 01-5-5L9 11" {...s} /></>,
     check: <path d="M5 13l4 4L19 7" {...s} strokeWidth="2.2" />,
+    home: <path d="M4 11l8-6 8 6M6 10v9h5v-6h2v6h5v-9" {...s} />,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24">{paths[name]}</svg>;
 };
@@ -170,10 +172,11 @@ export default function App() {
   const [revealData, setRevealData] = useState(null); // override on-chain reveal (e.g. merchant wallet)
   const [copied, setCopied] = useState(false);
   const [celebration, setCelebration] = useState(null);
-  // Merchant role
-  const [role, setRole] = useState("persona");
+  // Comercio (una sola cuenta: persona + comercio)
   const [myMerchant, setMyMerchant] = useState(null);
   const [merchantActivity, setMerchantActivity] = useState(null);
+  const [reportPeriod, setReportPeriod] = useState("day");
+  const [reportData, setReportData] = useState(null);
   const [merchantName, setMerchantName] = useState("");
   const [merchantCategory, setMerchantCategory] = useState("Abarrotes");
   const [qrDataUrl, setQrDataUrl] = useState("");
@@ -207,6 +210,7 @@ export default function App() {
       setLoanHistory(Array.isArray(hist) ? hist : hist.loans ?? []);
       setOnchain(oc);
       setYieldInfo(yi);
+      api("/api/merchants/mine").then((m) => setMyMerchant(m?.qrCode ? m : null)).catch(() => {});
     } catch (e) {
       if (e.message.includes("Invalid") || e.message.includes("expired")) {
         localStorage.removeItem("atlantis_token");
@@ -215,18 +219,22 @@ export default function App() {
     }
   }, []);
 
+  // Cobro recibido: confirmación a pantalla completa en el comercio (tipo terminal POS).
+  const showCobro = useCallback((p) => {
+    vibrate(); chime();
+    setCelebration({ title: "¡Cobro recibido!", amountMxn: p?.netMxn, subtitle: `de ${p?.payerName}${p?.reference ? ` · comprobante #${p.reference}` : ""}`, positive: true });
+    setTimeout(() => setCelebration(null), 2800);
+  }, []);
+
   const loadMerchantActivity = useCallback(async () => {
     try {
       const a = await api("/api/merchants/mine/activity");
       const n = a.payments?.length ?? 0;
-      if (lastPayCountRef.current !== null && n > lastPayCountRef.current) {
-        const p = a.payments[0];
-        notify(`Cobraste $${fmt(p?.netMxn)} de ${p?.payerName}`); // vibra + suena
-      }
+      if (lastPayCountRef.current !== null && n > lastPayCountRef.current) showCobro(a.payments[0]);
       lastPayCountRef.current = n;
       setMerchantActivity(a);
     } catch { /* ignore */ }
-  }, [notify]);
+  }, [showCobro]);
 
   useEffect(() => {
     if (localStorage.getItem("atlantis_token")) { setScreen(S.HOME); loadDash(); }
@@ -337,15 +345,13 @@ export default function App() {
     setTimeout(() => { setCelebration(null); setScreen(returnTo); }, 2200);
   };
 
-  // ─── Role routing + merchant ───
-  const routeAfterAuth = async () => {
-    if (role === "comercio") {
-      const m = await api("/api/merchants/mine").catch(() => null);
-      if (m && m.qrCode) { setMyMerchant(m); setScreen(S.MERCH_DASH); }
-      else setScreen(S.MERCH_ONBOARD);
-    } else {
-      setScreen(S.HOME); loadDash();
-    }
+  // ─── Routing + comercio (cuenta unificada) ───
+  const routeAfterAuth = async () => { setScreen(S.HOME); loadDash(); };
+  const goMerchant = () => { clear(); setScreen(myMerchant?.qrCode ? S.MERCH_DASH : S.MERCH_ONBOARD); };
+  const openReports = (period = "day") => { clear(); setScreen(S.MERCH_REPORTS); loadReport(period); };
+  const loadReport = async (period) => {
+    setReportPeriod(period); setReportData(null);
+    try { setReportData(await api(`/api/merchants/mine/report?period=${period}`)); } catch (e) { setError(e.message); }
   };
   const createMerchant = async () => {
     clear(); setLoading(true);
@@ -447,7 +453,7 @@ export default function App() {
   const logout = () => {
     localStorage.removeItem("atlantis_token");
     setUser(null); setBalance(null); setOnchain(null); setYieldInfo(null); setCurrentLoan(null);
-    setMyMerchant(null); setMerchantActivity(null); setScanning(false); setRole("persona");
+    setMyMerchant(null); setMerchantActivity(null); setScanning(false); setReportData(null);
     setScreen(S.WELCOME);
   };
 
@@ -468,27 +474,8 @@ export default function App() {
         <div style={{ width: 48, height: 1, background: t.gold, marginBottom: 20 }} />
         <p style={{ color: t.creamDim, fontSize: 18, marginBottom: 6, fontStyle: "italic" }}>La civilización financiera</p>
         <p style={{ ...sans, color: t.muted, fontSize: 13, marginBottom: 56, letterSpacing: "0.04em" }}>Crédito · Pagos · Envíos · Rendimiento</p>
-        <button style={btn} onClick={() => setScreen(S.ROLE)}>Comenzar</button>
+        <button style={btn} onClick={() => setScreen(S.PHONE)}>Comenzar</button>
         <p style={{ ...sans, color: t.muted, fontSize: 11, marginTop: 40, letterSpacing: "0.06em" }}>ATLANTIS 4.3 · DEMO</p>
-      </div>
-    );
-  } else if (screen === S.ROLE) {
-    topo = 0.05;
-    const roleTile = (icon, title, sub, r) => (
-      <button onClick={() => { setRole(r); setScreen(S.PHONE); }} style={{ ...card, width: "100%", textAlign: "left", cursor: "pointer", marginBottom: 16, display: "flex", gap: 16, alignItems: "center", border: `1px solid ${t.borderGold}` }}>
-        <Icon name={icon} size={28} />
-        <div><p style={{ fontSize: 18, fontWeight: 600 }}>{title}</p><p style={{ ...sans, color: t.muted, fontSize: 13, marginTop: 2 }}>{sub}</p></div>
-      </button>
-    );
-    content = (
-      <div style={page}>
-        <div style={{ paddingTop: 80, marginBottom: 40 }}>
-          <h2 style={{ fontSize: 30, fontWeight: 400, marginBottom: 10 }}>¿Cómo vas a usar Atlantis?</h2>
-          <p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic" }}>Elegí tu rol para esta sesión</p>
-        </div>
-        {roleTile("send", "Soy persona", "Crédito, pagos, envíos, rendimiento", "persona")}
-        {roleTile("pay", "Soy un comercio", "Cobrá con QR y mirá las ventas en vivo", "comercio")}
-        <button style={{ ...btnOutline, marginTop: 28 }} onClick={() => setScreen(S.WELCOME)}>Volver</button>
       </div>
     );
   } else if (screen === S.PHONE) {
@@ -712,7 +699,7 @@ export default function App() {
         <p style={label}>Rubro</p>
         <input style={{ ...inp, marginBottom: 28 }} value={merchantCategory} onChange={e => setMerchantCategory(e.target.value)} placeholder="Ej. Abarrotes" />
         <button style={{ ...btn, opacity: loading || merchantName.length < 2 ? 0.6 : 1 }} onClick={createMerchant} disabled={loading || merchantName.length < 2}>{loading ? "Creando..." : "Crear comercio"}</button>
-        <button style={{ ...btnOutline, marginTop: 12 }} onClick={logout}>Salir</button>
+        <button style={{ ...btnOutline, marginTop: 12 }} onClick={() => setScreen(S.HOME)}>Volver a Inicio</button>
       </div>
     );
   } else if (screen === S.MERCH_DASH) {
@@ -756,7 +743,10 @@ export default function App() {
           {qrDataUrl ? <img src={qrDataUrl} alt="QR del comercio" style={{ width: 220, height: 220, borderRadius: 12, margin: "8px auto" }} /> : <div style={{ height: 236 }} />}
           <p style={{ ...sans, color: t.gold, fontSize: 14, letterSpacing: "0.1em" }}>{myMerchant?.qrCode}</p>
         </div>
-        <p style={{ ...label, marginBottom: 12 }}>Pagos recibidos {pays.length > 0 && <span style={{ color: t.success }}>· en vivo</span>}</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <p style={label}>Pagos recibidos {pays.length > 0 && <span style={{ color: t.success }}>· en vivo</span>}</p>
+          <button onClick={() => openReports("day")} style={{ ...sans, background: "none", border: `1px solid ${t.borderGold}`, color: t.gold, padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}>Reportes →</button>
+        </div>
         {pays.length === 0 ? (
           <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Esperando el primer pago…</p>
         ) : pays.map((p, i) => (
@@ -764,6 +754,44 @@ export default function App() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <p style={{ fontSize: 15, fontWeight: 500 }}>{p.payerName}{p.reference ? <span style={{ ...sans, color: t.gold, fontSize: 12 }}> · #{p.reference}</span> : null}</p>
               <p style={{ ...sans, color: t.muted, fontSize: 11 }}>{new Date(p.createdAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</p>
+            </div>
+            <Breakdown gross={p.amountMxn} commission={p.commissionMxn} net={p.netMxn} />
+          </div>
+        ))}
+      </div>
+    );
+  } else if (screen === S.MERCH_REPORTS) {
+    topo = 0.03;
+    const periods = [["day", "Hoy"], ["week", "Semana"], ["month", "Mes"], ["ytd", "Año"]];
+    const tot = reportData?.totals;
+    const rpays = reportData?.payments ?? [];
+    content = (
+      <div style={page}>
+        <div style={{ paddingTop: 44 }}>{back(S.MERCH_DASH)}<h2 style={{ fontSize: 30, fontWeight: 400, marginBottom: 8 }}>Reportes</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>{myMerchant?.name}</p></div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 20, background: t.navyMid, padding: 4, borderRadius: 10 }}>
+          {periods.map(([p, lbl]) => (
+            <button key={p} onClick={() => loadReport(p)} style={{ flex: 1, padding: "9px 0", borderRadius: 7, border: "none", cursor: "pointer", fontFamily: "system-ui, sans-serif", fontSize: 13, fontWeight: 600, background: reportPeriod === p ? t.gold : "transparent", color: reportPeriod === p ? t.navy : t.creamDim }}>{lbl}</button>
+          ))}
+        </div>
+        <div style={{ ...card, marginBottom: 20, border: `1px solid ${t.borderGold}` }}>
+          <p style={label}>Neto recibido</p>
+          <p style={{ fontSize: 42, fontWeight: 300, color: t.gold, lineHeight: 1 }}>${fmt(tot?.netMxn)}</p>
+          <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 6 }}>{tot ? `${tot.count} cobro${tot.count === 1 ? "" : "s"}` : "—"} · MXN</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16, paddingTop: 16, borderTop: `1px solid ${t.border}` }}>
+            <div><p style={miniLabel}>Bruto facturado</p><p style={miniVal}>${fmt(tot?.grossMxn)}</p></div>
+            <div style={{ textAlign: "right" }}><p style={miniLabel}>Comisión Atlantis</p><p style={{ ...miniVal, color: t.danger }}>−${fmt(tot?.commissionMxn)}</p></div>
+          </div>
+        </div>
+        <p style={{ ...label, marginBottom: 12 }}>Detalle</p>
+        {!reportData ? (
+          <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Cargando…</p>
+        ) : rpays.length === 0 ? (
+          <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Sin cobros en este período.</p>
+        ) : rpays.map((p, i) => (
+          <div key={p.id || i} style={{ padding: "14px 0", borderBottom: `1px solid ${t.border}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <p style={{ fontSize: 15, fontWeight: 500 }}>{p.payerName}{p.reference ? <span style={{ ...sans, color: t.gold, fontSize: 12 }}> · #{p.reference}</span> : null}</p>
+              <p style={{ ...sans, color: t.muted, fontSize: 11 }}>{new Date(p.createdAt).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
             </div>
             <Breakdown gross={p.amountMxn} commission={p.commissionMxn} net={p.netMxn} />
           </div>
@@ -882,6 +910,23 @@ export default function App() {
       )}
 
       {content}
+
+      {MAIN_SCREENS.has(screen) && (
+        <>
+          <div style={{ height: 78 }} />
+          <nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, display: "flex", background: "rgba(11,22,40,0.96)", backdropFilter: "blur(12px)", borderTop: `1px solid ${t.border}`, zIndex: 120 }}>
+            {[
+              { id: "inicio", label: "Inicio", icon: "home", active: screen === S.HOME, go: () => { clear(); setScreen(S.HOME); } },
+              { id: "cobrar", label: "Cobrar", icon: "pay", active: screen === S.MERCH_DASH || screen === S.MERCH_ONBOARD || screen === S.MERCH_REPORTS, go: goMerchant },
+            ].map((tab) => (
+              <button key={tab.id} onClick={tab.go} style={{ flex: 1, background: "transparent", border: "none", cursor: "pointer", padding: "11px 0 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, color: tab.active ? t.gold : t.muted }}>
+                <Icon name={tab.icon} size={22} color={tab.active ? t.gold : t.muted} />
+                <span style={{ ...sans, fontSize: 11, fontWeight: tab.active ? 700 : 500 }}>{tab.label}</span>
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
     </div>
   );
 }
