@@ -168,6 +168,8 @@ export default function App() {
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [merchantCodeInput, setMerchantCodeInput] = useState("");
+  const [chargeAmount, setChargeAmount] = useState("");   // comercio: importe a cobrar (vacío = abierto)
+  const [payFixed, setPayFixed] = useState(false);        // pagador: el monto vino fijado en el QR
   const lastBalanceRef = useRef(null);   // para detectar plata entrante (persona)
   const lastPayCountRef = useRef(null);  // para detectar cobros nuevos (comercio)
 
@@ -248,14 +250,16 @@ export default function App() {
   // Render the merchant's QR image
   useEffect(() => {
     if (screen === S.MERCH_DASH && myMerchant?.qrCode) {
+      const amt = Number(chargeAmount);
+      const payload = amt > 0 ? `${myMerchant.qrCode}|${amt}` : myMerchant.qrCode; // monto embebido
       import("qrcode").then((QR) =>
-        QR.toDataURL(myMerchant.qrCode, {
+        QR.toDataURL(payload, {
           width: 320, margin: 3, errorCorrectionLevel: "Q",
           color: { dark: "#000000", light: "#FFFFFF" }, // alto contraste = escaneable de pantalla
         }).then(setQrDataUrl).catch(() => {})
       );
     }
-  }, [screen, myMerchant]);
+  }, [screen, myMerchant, chargeAmount]);
 
   // Poll the merchant dashboard (live incoming payments)
   useEffect(() => {
@@ -340,8 +344,13 @@ export default function App() {
     const m = raw.match(/ATL-[A-Z0-9]+/i);
     if (!m) { setError(`Ese QR no es de un comercio Atlantis (leí: ${raw.slice(0, 24)})`); return; }
     const code = m[0].toUpperCase();
-    try { setMerchant(await api(`/api/merchants/${code}`)); setSuccess("Comercio encontrado"); }
-    catch { setError(`No encontré el comercio ${code}`); }
+    const amt = raw.match(/\|\s*([\d.]+)/); // monto opcional embebido por el comercio
+    try {
+      setMerchant(await api(`/api/merchants/${code}`));
+      if (amt && Number(amt[1]) > 0) { setPayAmount(String(Number(amt[1]))); setPayFixed(true); }
+      else { setPayFixed(false); }
+      setSuccess("Comercio encontrado");
+    } catch { setError(`No encontré el comercio ${code}`); }
   };
 
   // ─── Actions ───
@@ -382,7 +391,7 @@ export default function App() {
     catch (e) { setError(e.message); } setLoading(false);
   };
   const openPay = () => {
-    clear(); setMerchant(null); setScanning(false); setScreen(S.PAY);
+    clear(); setMerchant(null); setScanning(false); setPayFixed(false); setScreen(S.PAY);
     import("html5-qrcode").catch(() => {}); // precargar la lib para que el "Abrir cámara" sea instantáneo
   };
   const pay = async () => {
@@ -653,8 +662,12 @@ export default function App() {
               <p style={{ fontSize: 20, fontWeight: 600 }}>{merchant.name}</p>
               <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 4 }}>{merchant.category} · {merchant.qrCode}</p>
             </div>
-            <p style={label}>Monto a pagar</p>
-            <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 10 }} type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+            <p style={label}>{payFixed ? "Monto definido por el comercio" : "Monto a pagar"}</p>
+            {payFixed ? (
+              <div style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 10, color: t.gold, borderColor: t.borderGold }}>${fmt(payAmount)}</div>
+            ) : (
+              <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 10 }} type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} />
+            )}
             <p style={{ ...sans, color: t.muted, fontSize: 12, marginBottom: 24 }}>Comisión al comercio: {(merchant.commissionBps ?? 50) / 100}% (vs 3-4% de las tarjetas)</p>
             <button style={{ ...btn, opacity: loading || !payAmount ? 0.6 : 1 }} onClick={pay} disabled={loading || !payAmount}>{loading ? "Procesando..." : `Pagar $${payAmount} MXN`}</button>
             <button style={{ ...btnOutline, marginTop: 12 }} onClick={() => { setMerchant(null); setScanning(true); }}>Escanear otro</button>
@@ -697,8 +710,20 @@ export default function App() {
             <p style={{ ...sans, color: t.muted, fontSize: 11, display: "flex", alignItems: "center", gap: 5 }}><Icon name="chain" size={13} color={t.muted} /> verificar en blockchain</p>
           </div>
         </div>
+        <div style={{ ...card, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <p style={label}>Importe a cobrar</p>
+            {Number(chargeAmount) > 0 && (
+              <button onClick={() => setChargeAmount("")} style={{ ...sans, background: "none", border: "none", color: t.muted, fontSize: 12, cursor: "pointer" }}>cobro abierto ✕</button>
+            )}
+          </div>
+          <input style={{ ...inp, fontSize: 30, textAlign: "center" }} type="number" inputMode="decimal" value={chargeAmount} onChange={(e) => setChargeAmount(e.target.value)} placeholder="$ libre" />
+          <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 8 }}>
+            {Number(chargeAmount) > 0 ? `El cliente confirma $${fmt(chargeAmount)} al escanear` : "Dejalo vacío y el cliente ingresa el monto"}
+          </p>
+        </div>
         <div style={{ ...card, textAlign: "center", marginBottom: 20 }}>
-          <p style={label}>Mostrá este QR para cobrar</p>
+          <p style={label}>{Number(chargeAmount) > 0 ? `Mostrá este QR para cobrar $${fmt(chargeAmount)}` : "Mostrá este QR para cobrar"}</p>
           {qrDataUrl ? <img src={qrDataUrl} alt="QR del comercio" style={{ width: 220, height: 220, borderRadius: 12, margin: "8px auto" }} /> : <div style={{ height: 236 }} />}
           <p style={{ ...sans, color: t.gold, fontSize: 14, letterSpacing: "0.1em" }}>{myMerchant?.qrCode}</p>
         </div>
