@@ -539,7 +539,11 @@ export default function App() {
         <div style={{ paddingTop: 28, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 28 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <LogoMark size={32} />
-            <div><p style={{ ...sans, color: t.muted, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase" }}>Bienvenido</p><p style={{ fontSize: 20, fontWeight: 600 }}>{user?.name || "Usuario"}</p></div>
+            <div>
+              <p style={{ ...sans, color: t.muted, fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase" }}>Bienvenido</p>
+              <p style={{ fontSize: 20, fontWeight: 600 }}>{user?.name || "Usuario"}</p>
+              {myMerchant && <p style={{ ...sans, color: t.gold, fontSize: 12, marginTop: 3, display: "flex", alignItems: "center", gap: 5 }}><Icon name="pay" size={12} color={t.gold} /> {myMerchant.name}</p>}
+            </div>
           </div>
           <button onClick={logout} style={{ ...sans, background: "transparent", border: `1px solid ${t.border}`, color: t.muted, padding: "7px 14px", borderRadius: 6, fontSize: 11, cursor: "pointer", letterSpacing: "0.06em" }}>SALIR</button>
         </div>
@@ -553,6 +557,19 @@ export default function App() {
             <p style={{ ...sans, color: t.muted, fontSize: 11, display: "flex", alignItems: "center", gap: 5 }}><Icon name="chain" size={13} color={t.muted} /> verificar en blockchain</p>
           </div>
         </div>
+
+        {myMerchant && (
+          <button onClick={goMerchant} style={{ width: "100%", textAlign: "left", background: `${t.gold}12`, border: `1px solid ${t.borderGold}`, borderRadius: 12, padding: "14px 16px", marginBottom: 14, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Icon name="pay" size={22} />
+              <div>
+                <p style={{ ...sans, color: t.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>Tu comercio</p>
+                <p style={{ fontSize: 16, fontWeight: 600 }}>{myMerchant.name}</p>
+              </div>
+            </div>
+            <span style={{ ...sans, color: t.gold, fontSize: 13, fontWeight: 600 }}>Cobrar →</span>
+          </button>
+        )}
 
         {yieldInfo && (
           <button onClick={() => setScreen(S.YIELD)} style={{ width: "100%", textAlign: "left", background: `${t.success}10`, border: `1px solid ${t.success}33`, borderRadius: 12, padding: "12px 16px", marginBottom: 20, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
