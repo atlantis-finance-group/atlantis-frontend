@@ -29,9 +29,9 @@ const api = async (path, options = {}) => {
 const S = {
   WELCOME: 0, PHONE: 1, OTP: 2, PROFILE: 3, HOME: 4,
   APPLY: 5, REPAY: 6, HISTORY: 7, PAY: 8, SEND: 9, YIELD: 10, DEPOSIT: 11,
-  ROLE: 12, MERCH_ONBOARD: 13, MERCH_DASH: 14, MERCH_REPORTS: 15,
+  ROLE: 12, MERCH_ONBOARD: 13, MERCH_DASH: 14, MERCH_REPORTS: 15, MERCH_MOVEMENTS: 16,
 };
-const MAIN_SCREENS = new Set([4, 13, 14, 15]); // HOME, MERCH_ONBOARD, MERCH_DASH, MERCH_REPORTS → muestran tab bar
+const MAIN_SCREENS = new Set([4, 13, 14, 15, 16]); // HOME, MERCH_ONBOARD, MERCH_DASH, MERCH_REPORTS, MERCH_MOVEMENTS → tab bar
 
 const fmt = (n) => Number(n ?? 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const DEBIT = new Set(["LOAN_REPAYMENT", "WITHDRAWAL", "FEE", "P2P_SENT", "MERCHANT_PAYMENT"]);
@@ -177,6 +177,8 @@ export default function App() {
   const [merchantActivity, setMerchantActivity] = useState(null);
   const [reportPeriod, setReportPeriod] = useState("day");
   const [reportData, setReportData] = useState(null);
+  const [merchantMovements, setMerchantMovements] = useState(null);
+  const [actorMode, setActorMode] = useState("personal"); // 'personal' | 'merchant' — con qué saldo se opera
   const [merchantName, setMerchantName] = useState("");
   const [merchantCategory, setMerchantCategory] = useState("Abarrotes");
   const [qrDataUrl, setQrDataUrl] = useState("");
@@ -409,27 +411,45 @@ export default function App() {
     try { const r = await api("/api/credit/repay", { method: "POST", body: "{}" }); await loadDash(); celebrate("Crédito pagado", r.repaidAmountMxn, "¡Tu historial crediticio crece!", false); }
     catch (e) { setError(e.message); } setLoading(false);
   };
+  // ¿Operamos con el saldo del comercio? Define endpoint, refresco y pantalla de retorno.
+  const asMerchant = () => actorMode === "merchant";
+  const afterTxn = async () => { if (asMerchant()) await loadMerchantActivity(); else await loadDash(); };
+  const txnReturn = () => (asMerchant() ? S.MERCH_DASH : S.HOME);
+  const openPay = (mode = "personal") => {
+    clear(); setActorMode(mode); setMerchant(null); setScanning(false); setPayFixed(false); setPayRef(""); setScreen(S.PAY);
+    import("html5-qrcode").catch(() => {}); // precargar la lib para que el "Abrir cámara" sea instantáneo
+  };
+  const openSend = (mode = "personal") => { clear(); setActorMode(mode); setScreen(S.SEND); };
+  const openDeposit = (mode = "personal") => { clear(); setActorMode(mode); setScreen(S.DEPOSIT); };
+  const openMovements = async () => { clear(); setMerchantMovements(null); setScreen(S.MERCH_MOVEMENTS); try { setMerchantMovements(await api("/api/merchants/mine/movements")); } catch (e) { setError(e.message); } };
   const deposit = async () => {
     clear(); setLoading(true);
-    try { const r = await api("/api/wallet/deposit", { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(depositAmount) }) }); await loadDash(); celebrate("Depósito acreditado", r.depositedMxn, "Efectivo convertido a saldo digital"); }
-    catch (e) { setError(e.message); } setLoading(false);
-  };
-  const openPay = () => {
-    clear(); setMerchant(null); setScanning(false); setPayFixed(false); setPayRef(""); setScreen(S.PAY);
-    import("html5-qrcode").catch(() => {}); // precargar la lib para que el "Abrir cámara" sea instantáneo
+    try {
+      const path = asMerchant() ? "/api/merchants/mine/deposit" : "/api/wallet/deposit";
+      const r = await api(path, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(depositAmount) }) });
+      await afterTxn();
+      celebrate(asMerchant() ? "Depósito al comercio" : "Depósito acreditado", r.depositedMxn, asMerchant() ? "Saldo cargado al comercio" : "Efectivo convertido a saldo digital", true, txnReturn());
+    } catch (e) { setError(e.message); } setLoading(false);
   };
   const pay = async () => {
     clear(); setLoading(true);
-    try { const r = await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount), ...(payRef ? { reference: payRef } : {}) }) }); await loadDash(); celebrate(`Pagaste en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false); }
-    catch (e) { setError(e.message); } setLoading(false);
+    try {
+      const r = asMerchant()
+        ? await api("/api/merchants/mine/pay", { method: "POST", body: JSON.stringify({ qrCode: merchant.qrCode, amountMxn: parseFloat(payAmount), ...(payRef ? { reference: payRef } : {}) }) })
+        : await api(`/api/merchants/${merchant.qrCode}/pay`, { method: "POST", body: JSON.stringify({ amountMxn: parseFloat(payAmount), ...(payRef ? { reference: payRef } : {}) }) });
+      await afterTxn();
+      celebrate(`Pagaste${asMerchant() ? " (comercio)" : ""} en ${r.merchant.name}`, r.amountMxn, `Comisión ${fmt(r.commissionMxn)} MXN (${r.commissionBps / 100}%) · liquidado en Solana`, false, txnReturn());
+    } catch (e) { setError(e.message); } setLoading(false);
   };
   const sendP2P = async () => {
     clear(); setLoading(true);
     try {
-      const r = await api("/api/wallet/transfer", { method: "POST", body: JSON.stringify({ toPhone: sendPhone, amountMxn: parseFloat(sendAmount) }) });
-      await loadDash();
+      const r = asMerchant()
+        ? await api("/api/merchants/mine/send", { method: "POST", body: JSON.stringify({ toPhone: sendPhone, amountMxn: parseFloat(sendAmount) }) })
+        : await api("/api/wallet/transfer", { method: "POST", body: JSON.stringify({ toPhone: sendPhone, amountMxn: parseFloat(sendAmount) }) });
+      await afterTxn();
       const sub = r.recipient.isNewUser ? "Le creamos una cuenta — la reclama al registrarse" : "Recibido al instante";
-      celebrate(`Enviaste a ${r.recipient.phone}`, r.amountMxn, sub, false);
+      celebrate(`Enviaste${asMerchant() ? " (comercio)" : ""} a ${r.recipient.phone}`, r.amountMxn, sub, false, txnReturn());
     } catch (e) { setError(e.message); } setLoading(false);
   };
   const advanceTime = async (days) => {
@@ -460,6 +480,14 @@ export default function App() {
   const back = (to = S.HOME) => (
     <button onClick={() => { clear(); setScreen(to); }} style={{ background: "transparent", border: "none", color: t.creamDim, fontSize: 15, cursor: "pointer", padding: 0, marginBottom: 24, fontFamily: "'EB Garamond', serif" }}>← Volver</button>
   );
+  // En pantallas de acción, deja claro que se opera con el saldo del comercio.
+  const merchBalanceMxn = merchantActivity?.balanceMxn ?? myMerchant?.balanceMxn ?? 0;
+  const actorBanner = actorMode === "merchant" ? (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: `${t.gold}12`, border: `1px solid ${t.borderGold}`, borderRadius: 10, padding: "10px 14px", marginBottom: 20 }}>
+      <span style={{ ...sans, color: t.gold, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><Icon name="pay" size={14} color={t.gold} /> Operás como {myMerchant?.name}</span>
+      <span style={{ ...sans, color: t.creamDim, fontSize: 12 }}>saldo ${fmt(merchBalanceMxn)}</span>
+    </div>
+  ) : null;
 
   // ─── Screen content (plain JSX, single return below keeps inputs mounted) ───
   let content = null;
@@ -580,9 +608,9 @@ export default function App() {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
           {tile("credit", hasLoan ? "Crédito activo" : "Pedir crédito", "Atlantis Daily", () => !hasLoan && setScreen(S.APPLY), hasLoan)}
-          {tile("pay", "Pagar", "Escaneá un QR", openPay, false)}
-          {tile("send", "Enviar", "A cualquier teléfono", () => setScreen(S.SEND), false)}
-          {tile("deposit", "Depositar", "Cargar efectivo", () => setScreen(S.DEPOSIT), false)}
+          {tile("pay", "Pagar", "Escaneá un QR", () => openPay("personal"), false)}
+          {tile("send", "Enviar", "A cualquier teléfono", () => openSend("personal"), false)}
+          {tile("deposit", "Depositar", "Cargar efectivo", () => openDeposit("personal"), false)}
         </div>
 
         {hasLoan && (
@@ -670,7 +698,8 @@ export default function App() {
     topo = 0.03;
     content = (
       <div style={page}>
-        <div style={{ paddingTop: 44 }}>{back()}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Pagar en comercio</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>{merchant ? "Confirmá el pago" : "Escaneá el QR del local"}</p></div>
+        <div style={{ paddingTop: 44 }}>{back(actorMode === "merchant" ? S.MERCH_DASH : S.HOME)}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Pagar en comercio</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>{merchant ? "Confirmá el pago" : "Escaneá el QR del local"}</p></div>
+        {actorBanner}
         {!merchant ? (
           <>
             {scanning
@@ -739,6 +768,21 @@ export default function App() {
             <p style={{ ...sans, color: t.muted, fontSize: 11, display: "flex", alignItems: "center", gap: 5 }}><Icon name="chain" size={13} color={t.muted} /> verificar en blockchain</p>
           </div>
         </div>
+        <p style={{ ...label, marginBottom: 10 }}>Operar como comercio</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 18 }}>
+          {[
+            { icon: "pay", label: "Pagar", go: () => openPay("merchant") },
+            { icon: "send", label: "Enviar", go: () => openSend("merchant") },
+            { icon: "deposit", label: "Depositar", go: () => openDeposit("merchant") },
+          ].map((a) => (
+            <button key={a.label} onClick={a.go} style={{ ...card, padding: 14, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+              <Icon name={a.icon} size={22} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>{a.label}</span>
+            </button>
+          ))}
+        </div>
+        <div style={{ ...divider }} />
+        <p style={{ ...label, marginBottom: 10 }}>Cobrar con QR</p>
         <div style={{ ...card, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <p style={label}>Importe a cobrar</p>
@@ -762,7 +806,10 @@ export default function App() {
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <p style={label}>Pagos recibidos {pays.length > 0 && <span style={{ color: t.success }}>· en vivo</span>}</p>
-          <button onClick={() => openReports("day")} style={{ ...sans, background: "none", border: `1px solid ${t.borderGold}`, color: t.gold, padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}>Reportes →</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={openMovements} style={{ ...sans, background: "none", border: `1px solid ${t.border}`, color: t.creamDim, padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}>Movimientos</button>
+            <button onClick={() => openReports("day")} style={{ ...sans, background: "none", border: `1px solid ${t.borderGold}`, color: t.gold, padding: "6px 12px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}>Reportes →</button>
+          </div>
         </div>
         {pays.length === 0 ? (
           <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Esperando el primer pago…</p>
@@ -815,11 +862,42 @@ export default function App() {
         ))}
       </div>
     );
+  } else if (screen === S.MERCH_MOVEMENTS) {
+    topo = 0.03;
+    const mv = merchantMovements?.movements ?? [];
+    const tlabel = { CHARGE_RECEIVED: "Cobro", DEPOSIT: "Depósito", MERCHANT_PAYMENT: "Pago a comercio", P2P_SENT: "Envío" };
+    content = (
+      <div style={page}>
+        <div style={{ paddingTop: 44 }}>{back(S.MERCH_DASH)}<h2 style={{ fontSize: 30, fontWeight: 400, marginBottom: 8 }}>Movimientos</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 20 }}>{myMerchant?.name}</p></div>
+        <div style={{ ...card, marginBottom: 20, border: `1px solid ${t.borderGold}` }}>
+          <p style={label}>Saldo del comercio</p>
+          <p style={{ fontSize: 40, fontWeight: 300, color: t.gold, lineHeight: 1 }}>${fmt(merchantMovements?.balanceMxn)}</p>
+          <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 6 }}>MXN</p>
+        </div>
+        {!merchantMovements ? (
+          <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Cargando…</p>
+        ) : mv.length === 0 ? (
+          <p style={{ color: t.muted, fontSize: 15, fontStyle: "italic" }}>Sin movimientos todavía.</p>
+        ) : mv.map((m) => {
+          const isIn = m.direction === "in";
+          return (
+            <div key={m.id} style={{ padding: "14px 0", borderBottom: `1px solid ${t.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <p style={{ fontSize: 15, fontWeight: 500 }}>{m.description}{m.reference ? <span style={{ ...sans, color: t.gold, fontSize: 12 }}> · #{m.reference}</span> : null}</p>
+                <p style={{ fontWeight: 600, fontSize: 16, color: isIn ? t.success : t.danger, whiteSpace: "nowrap" }}>{isIn ? "+" : "−"}${fmt(m.amountMxn)}</p>
+              </div>
+              <p style={{ ...sans, color: t.muted, fontSize: 12, marginTop: 3 }}>{tlabel[m.type] || m.type} · {new Date(m.createdAt).toLocaleDateString("es-MX", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+            </div>
+          );
+        })}
+      </div>
+    );
   } else if (screen === S.SEND) {
     topo = 0.03;
     content = (
       <div style={page}>
-        <div style={{ paddingTop: 44 }}>{back()}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Enviar dinero</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 32 }}>A cualquier teléfono, al instante</p></div>
+        <div style={{ paddingTop: 44 }}>{back(actorMode === "merchant" ? S.MERCH_DASH : S.HOME)}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Enviar dinero</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>A cualquier teléfono, al instante</p></div>
+        {actorBanner}
         <p style={label}>Teléfono de quien recibe</p>
         <input style={{ ...inp, marginBottom: 24 }} type="tel" value={sendPhone} onChange={e => setSendPhone(e.target.value)} placeholder="+52 ..." />
         <p style={label}>Monto</p>
@@ -832,7 +910,8 @@ export default function App() {
     topo = 0.03;
     content = (
       <div style={page}>
-        <div style={{ paddingTop: 44 }}>{back()}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Depositar efectivo</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 32 }}>Convertí pesos en efectivo a saldo digital</p></div>
+        <div style={{ paddingTop: 44 }}>{back(actorMode === "merchant" ? S.MERCH_DASH : S.HOME)}<h2 style={{ fontSize: 32, fontWeight: 400, marginBottom: 8 }}>Depositar efectivo</h2><p style={{ color: t.creamDim, fontSize: 16, fontStyle: "italic", marginBottom: 24 }}>{actorMode === "merchant" ? "Cargá saldo a tu comercio" : "Convertí pesos en efectivo a saldo digital"}</p></div>
+        {actorBanner}
         <p style={label}>Monto en pesos</p>
         <input style={{ ...inp, fontSize: 32, textAlign: "center", marginBottom: 32 }} type="number" value={depositAmount} onChange={e => setDepositAmount(e.target.value)} />
         <button style={{ ...btn, opacity: loading || !depositAmount ? 0.6 : 1 }} onClick={deposit} disabled={loading || !depositAmount}>{loading ? "Procesando..." : `Depositar $${depositAmount} MXN`}</button>
@@ -934,7 +1013,7 @@ export default function App() {
           <nav style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, display: "flex", background: "rgba(11,22,40,0.96)", backdropFilter: "blur(12px)", borderTop: `1px solid ${t.border}`, zIndex: 120 }}>
             {[
               { id: "inicio", label: "Inicio", icon: "home", active: screen === S.HOME, go: () => { clear(); setScreen(S.HOME); } },
-              { id: "cobrar", label: "Cobrar", icon: "pay", active: screen === S.MERCH_DASH || screen === S.MERCH_ONBOARD || screen === S.MERCH_REPORTS, go: goMerchant },
+              { id: "cobrar", label: "Cobrar", icon: "pay", active: screen === S.MERCH_DASH || screen === S.MERCH_ONBOARD || screen === S.MERCH_REPORTS || screen === S.MERCH_MOVEMENTS, go: goMerchant },
             ].map((tab) => (
               <button key={tab.id} onClick={tab.go} style={{ flex: 1, background: "transparent", border: "none", cursor: "pointer", padding: "11px 0 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, color: tab.active ? t.gold : t.muted }}>
                 <Icon name={tab.icon} size={22} color={tab.active ? t.gold : t.muted} />
